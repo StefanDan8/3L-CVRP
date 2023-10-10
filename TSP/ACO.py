@@ -1,5 +1,5 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import time
 from tsp_reader import TSPProblem
 
@@ -9,11 +9,12 @@ class ACO:
     Ant Colony Optimization
     """
 
-    def __init__(self, alpha = 1, beta = 2, rho = 0.5, nn = 20):
+    def __init__(self, alpha = 1, beta = 2, rho = 0.5, Q = 20, nn = 20):
         self.alpha = alpha  # pheromone exponent
         self.beta = beta  # prior exponent
         self.rho = rho  # evaporation factor
         self.nn = nn  # nearest-neighbour threshold
+        self.Q = Q  # pheromone delta multiplier
         self.num_cities = 0
         self.num_ants = 0
         self.distance_matrix = None
@@ -33,7 +34,8 @@ class ACO:
         self.current_iter = 0
         self.best_tour = None
         self.best_tour_length = np.Inf
-        self.history_best_length = []
+        self.evolution_best_length = []
+        self.iteration_best_length = []
 
     def __call__(self, TSP_instance: TSPProblem):
         self.distance_matrix = TSP_instance.distance_matrix
@@ -43,10 +45,10 @@ class ACO:
         self.ants = [SingleAnt(self.num_cities) for _ in range(self.num_ants)]
         self.prior = np.power(self.distance_matrix, -self.beta)
 
-    def _compute_tour_length(self, ant):
+    def _compute_tour_length(self, tour):
         tour_length = 0.0
         for i in range(self.num_cities):
-            tour_length += self.distance_matrix[ant.tour[i], ant.tour[i + 1]]
+            tour_length += self.distance_matrix[tour[i], tour[i + 1]]
         return tour_length
 
 
@@ -57,14 +59,42 @@ class SingleAnt:
         self.tour = np.zeros(shape = self.num_cities + 1, dtype = 'int')  # store the (partial) tour
         self.visited = [False for _ in range(self.num_cities)]  # visited cities
 
+    def reset(self, rng):
+        self.tour_length = 0.0
+        self.visited = [False for _ in range(self.num_cities)]
+        rand_int = rng.integers(low = 0, high = self.num_cities)
+        self.tour[0] = rand_int
+        self.visited[rand_int] = True
+
+    def construct_tour(self, choice_info, rng):
+        self.reset(rng)
+
+        def _decision_rule(step: int):
+            """
+            Randomly picks next city for the ant based on a distribution derived from the current city's row in
+            `choice_info`
+            :param step: current step
+            """
+            c = self.tour[step - 1]  # current city
+            prob = np.array([choice_info[c, j] if not self.visited[j] else 0.0 for j in range(self.num_cities)])
+            prob = prob / sum(prob)  # construct a probability distribution based on edge attractiveness
+            return rng.choice(self.num_cities, size = 1, p = prob).item()
+
+        for step in range(1, self.num_cities):
+            next_city = _decision_rule(step)
+            self.tour[step] = next_city
+            self.visited[next_city] = True
+            self.tour[self.num_cities] = self.tour[0]
+        return self.tour
+
 
 class AS(ACO):
     """
     Ant System
     """
 
-    def __init__(self, alpha = 1, beta = 5, rho = 0.5, nn = 20, seed = 42):
-        super().__init__(alpha, beta, rho, nn)
+    def __init__(self, alpha = 1, beta = 5, rho = 0.5, Q = 20, nn = 20, seed = 42):
+        super().__init__(alpha, beta, rho, Q, nn)
         self.rng = np.random.default_rng(seed)
 
     def __call__(self, TSP_instance: TSPProblem):
@@ -84,66 +114,45 @@ class AS(ACO):
         # AS Iteration
         while not self._terminate():
             self.current_iter += 1
-            start = time.time()
+            # start = time.time()
             # Construct Solutions
-            self._construct_solutions()
+            tour, length = self._construct_solutions()
             # Optional Local Search Improvement
-            # self._local_search()  #TODO
+            improved_tour = self._local_search(tour, length)
+            improved_length = self._compute_tour_length(improved_tour)
+            if improved_length < self.best_tour_length:
+                self.best_tour_length = improved_length
+                print(improved_length)
             # Update Pheromones
-            self._update_pheromones()
+            self._update_pheromones(improved_tour, improved_length)
 
             # Statistics & Performance:
-            print(f'Iteration {self.current_iter}')
-            print(f'Time: {np.round(time.time()-start, 2)}')
-            print(f'Best tour length: {self.best_tour_length}')
+            # print(f'Iteration {self.current_iter}')
+            # print(f'Time: {np.round(time.time()-start, 2)}')
+            # print(f'Best tour length: {self.best_tour_length}')
 
-        print(f'Absolute time: {time.time()-absolute_start}')
+        print(f'Absolute time: {time.time() - absolute_start}')
+        plt.plot(range(1, self.max_iter + 1), self.iteration_best_length)
+        plt.show()
         return self.best_tour, self.best_tour_length
 
     def _construct_solutions(self):
         """
         Sequentially constructs a tour for each ant based on the `_decision_rule`
         """
-        # TODO implement this in parallel
-        step = 0
+        best_iter_tour_length = np.Inf
+        best_ant = None
         for ant in self.ants:
-            # Empty ants' memory
-            ant.visited = [False for _ in range(ant.num_cities)]
-            # Assign each ant a random starting city
-            rand_int = self.rng.integers(low = 0, high = self.num_cities)
-            ant.tour[step] = rand_int
-            ant.visited[rand_int] = True
-        # Tour construction
-        while step < self.num_cities - 1:
-            for ant in self.ants:
-                self._decision_rule(ant, step)
-            step += 1
-        # close the tour
-        for ant in self.ants:
-            ant.tour[self.num_cities] = ant.tour[0]  # unnecessary, but makes it clearer
-            ant.tour_length = self._compute_tour_length(ant)
-            # Update best tour so far
-            if ant.tour_length < self.best_tour_length:
-                self.best_tour_length = ant.tour_length
-                self.best_tour = ant.tour
-
-        # Add the best tour length to history after this iteration
-        self.history_best_length.append(self.best_tour_length)
-
-    def _decision_rule(self, ant: SingleAnt, step: int):
-        """
-        Randomly picks next city for the `ant` based on a distribution derived from the current city's row in
-        `self.choice_info`
-        :param ant: the Ant agent
-        :param step: current step
-        """
-        c = ant.tour[step]  # current city
-        prob = np.array([self.choice_info[c, j] if not ant.visited[j] else 0.0 for j in range(self.num_cities)])
-        prob = prob / sum(prob)  # construct a probability distribution based on edge attractiveness
-
-        next_city = self.rng.choice(self.num_cities, size = 1, p = prob).item()
-        ant.tour[step + 1] = next_city
-        ant.visited[next_city] = True
+            ant.tour_length = self._compute_tour_length(ant.construct_tour(self.choice_info, self.rng))
+            if ant.tour_length < best_iter_tour_length:
+                best_iter_tour_length = ant.tour_length
+                best_ant = ant
+        if best_iter_tour_length < self.best_tour_length:
+            self.best_tour_length = best_iter_tour_length
+            self.best_tour = best_ant.tour
+        self.iteration_best_length.append(best_iter_tour_length)
+        self.evolution_best_length.append(self.best_tour_length)
+        return best_ant.tour, best_iter_tour_length
 
     def _nn_decision_rule(self, ant: SingleAnt, step: int):
         """
@@ -156,18 +165,43 @@ class AS(ACO):
         # TODO
         pass
 
-    def _local_search(self):
-        pass
+    def _local_search(self, tour, tour_length):
+        def dist(v, w):
+            return tour_length - self.distance_matrix[tour[v], tour[v + 1]] - \
+                   self.distance_matrix[tour[w], tour[w + 1]] + \
+                   self.distance_matrix[tour[v], tour[w]] + \
+                   self.distance_matrix[tour[v + 1], tour[w + 1]]
+
+        def do2_Opt(path, v, w):
+            path[v + 1:w + 1] = path[v + 1:w + 1][::-1]
+
+        num_iter = 0
+        for i in range(self.num_cities - 1):
+            for j in range(i, self.num_cities):
+                if dist(i, j) < tour_length:
+                    # found improvement
+                    num_iter += 1
+                    do2_Opt(tour, i, j)
+                    if num_iter == 5:
+                        return tour
+        return tour
 
     def _choose_next_best(self, ant: SingleAnt, step: int):
         pass
 
-    def _update_pheromones(self):
+    def _update_pheromones(self, tour, length):
         # Evaporate
         self.pheromone = (1 - self.rho) * self.pheromone
         # Deposit pheromone
         for ant in self.ants:
             self._deposit_pheromone(ant)
+        # Deposit for local search tour
+        delta = self.Q / length
+        for i in range(self.num_cities):
+            j = tour[i]
+            k = tour[i + 1]
+            self.pheromone[j, k] += delta
+            self.pheromone[k, j] += delta
         # Update choice_info
         self._compute_choice_info()
 
@@ -177,7 +211,7 @@ class AS(ACO):
         length of the tour made by `ant` to each value part of its tour
         :param ant: the Ant agent
         """
-        delta = 100 / ant.tour_length
+        delta = self.Q / ant.tour_length
         for i in range(self.num_cities):
             j = ant.tour[i]
             k = ant.tour[i + 1]

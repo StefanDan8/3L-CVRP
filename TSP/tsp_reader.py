@@ -37,10 +37,7 @@ class TSPProblem:
         nn_tour = nx.algorithms.approximation.greedy_tsp(self.graph)
         length = 0.0
         for i in range(self.DIMENSION):
-            print(i, nn_tour[i], nn_tour[i + 1], self.distance_matrix[nn_tour[i], nn_tour[i + 1]])
             length += self.distance_matrix[nn_tour[i], nn_tour[i + 1]]
-        print(nn_tour)
-        print(length)
         return length
 
 
